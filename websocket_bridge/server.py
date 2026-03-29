@@ -36,7 +36,7 @@ clients = set()
 
 TCP_HOST = '127.0.0.1'
 TCP_PORT = 9999
-USE_TLS = False
+USE_TLS = True
 
 def recv_exact(sock, size):
     buf = b""
@@ -48,51 +48,60 @@ def recv_exact(sock, size):
     return buf
 
 async def connect_to_tcp_and_broadcast():
-    # Connects to the TCP server, receives frames, and broadcasts to WebSocket clients.
-    loop = asyncio.get_event_loop()
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    
+    # Connects to the TCP server using asyncio streams with SSL, receives frames, and broadcasts to WebSocket clients.
+    ssl_ctx = None
     if USE_TLS:
-        # Wrap connection in TLS if server demands it
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        sock = context.wrap_socket(sock, server_hostname=TCP_HOST)
-        
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
     try:
-        await loop.sock_connect(sock, (TCP_HOST, TCP_PORT))
-        
+        reader, writer = await asyncio.open_connection(
+            TCP_HOST, TCP_PORT, ssl=ssl_ctx
+        )
+
         # Authenticate with the TCP server securely via .env credentials
         auth_msg = f"AUTH {os.environ.get('STREAM_USER', 'admin')} {os.environ.get('STREAM_PASSWORD', 'admin123')}\n"
-        await loop.sock_sendall(sock, auth_msg.encode('utf-8'))
-        
-        auth_resp = await loop.sock_recv(sock, 1024)
+        writer.write(auth_msg.encode('utf-8'))
+        await writer.drain()
+
+        auth_resp = await reader.read(32)
+        print(f"[DEBUG] Auth response from TCP server: {auth_resp}")
         if b"AUTH_SUCCESS" not in auth_resp:
             print(f"Bridge failed to auth with TCP server. Server responded with: {auth_resp} using user: {os.environ.get('STREAM_USER')}")
+            writer.close()
+            await writer.wait_closed()
             return
-            
+
         print("Bridge connected to TCP Backend. Ready to broadcast to WS clients.")
-        
+
         while True:
             # 1. Read the 4-byte frame header
-            header = await loop.run_in_executor(None, recv_exact, sock, 4)
-            if not header: break
+            header = await reader.readexactly(4)
+            print(f"[DEBUG] Frame header bytes: {header}")
+            if not header:
+                break
             (data_size,) = struct.unpack('>I', header)
-            
-            # 2. Read the entire frame payload based on the parsed size 
-            payload = await loop.run_in_executor(None, recv_exact, sock, data_size)
-            if not payload: break
-            
+            print(f"[DEBUG] Frame size: {data_size}")
+
+            # 2. Read the entire frame payload based on the parsed size
+            payload = await reader.readexactly(data_size)
+            if not payload:
+                break
+
             # Broadcast to web clients
             if clients:
-                # Concurrent send to all active WebSocket clients.
                 coros = [client.send_bytes(payload) for client in clients]
                 await asyncio.gather(*coros, return_exceptions=True)
-                
+
     except Exception as e:
         print(f"Bridge error: {e}")
     finally:
-        sock.close()
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except:
+            pass
 
 
 

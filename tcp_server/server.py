@@ -38,7 +38,10 @@ class TCPStreamingServer:
         print(f"[*] TCP Server Listening on {self.host}:{self.port}")
         if self.use_tls:
             context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            context.load_cert_chain(certfile='cert.pem', keyfile='key.pem')
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            cert_path = os.path.join(base_dir, 'cert.pem')
+            key_path = os.path.join(base_dir, 'key.pem')
+            context.load_cert_chain(certfile=cert_path, keyfile=key_path)
             self.server_socket = context.wrap_socket(self.server_socket, server_side=True)
             print("[*] TLS Encryption Enabled")
         self.running = True
@@ -84,8 +87,8 @@ class TCPStreamingServer:
             
             # Add to broadcast pool
             with self.clients_lock:
-                # Add congestion protection timeout (if client is too slow, sending will timeout)
-                client_sock.settimeout(0.5) 
+                # Only set send timeout for congestion protection; do not set receive timeout for bridge client
+                client_sock.settimeout(None)  # No timeout for recv
                 self.clients.append(client_sock)
                 
             print(f"[+] Client {addr} authenticated successfully.")
@@ -160,6 +163,10 @@ class TCPStreamingServer:
 
 if __name__ == "__main__":
     import ssl
-    # Run the TCP Server without TLS for simple testing if keys don't exist yet
-    server = TCPStreamingServer(use_tls=False) 
-    server.start()
+    server = TCPStreamingServer(use_tls=True)
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        print("\n[!] Shutting down server (Ctrl+C)")
+        server.stop()
+        print("[!] Server stopped cleanly.")

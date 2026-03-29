@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Remote Desktop</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #111; color: white; margin: 0; padding: 0; }
+        .container { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; }
+        #login-view { background: #222; padding: 40px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
+        .input-group { margin-bottom: 15px; }
+        input { padding: 10px; width: 250px; background: #333; border: 1px solid #444; color: white; border-radius: 4px;}
+        button { padding: 10px 20px; background: #007bff; border: none; color: white; border-radius: 4px; cursor: pointer; width: 100%;}
+        button:hover { background: #0056b3; }
+        .error { color: #ff4d4d; margin-top: 10px; display: none; }
+        
+        #streaming-view { display: none; flex-direction: column; align-items: center; width: 100%; height: 100%; }
+        .overlay { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 4px; pointer-events: none;}
+        canvas { max-width: 100%; max-height: 100vh; background: black; }
+    </style>
+</head>
+<body>
+
+    <div id="login-view" class="container">
+        <h2>Remote Desktop Login</h2>
+        <div class="input-group">
+            <input type="text" id="username" placeholder="Username">
+        </div>
+        <div class="input-group">
+            <input type="password" id="password" placeholder="Password">
+        </div>
+        <button onclick="login()">Connect</button>
+        <div id="login-error" class="error">Invalid credentials or connection failed.</div>
+    </div>
+
+    <div id="streaming-view">
+        <div class="overlay">
+            <div>Status: <span id="status" style="color: #00ff00;">Connected</span></div>
+            <div>FPS: <span id="fps">0</span></div>
+        </div>
+        <canvas id="screen-canvas"></canvas>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

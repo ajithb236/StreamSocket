@@ -34,7 +34,7 @@ class TCPStreamingServer:
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.host, self.port))
-        self.server_socket.listen(5)
+        self.server_socket.listen(100)
         print(f"[*] TCP Server Listening on {self.host}:{self.port}")
         if self.use_tls:
             context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -127,6 +127,7 @@ class TCPStreamingServer:
             
             with self.clients_lock:
                 stale_clients = []
+                import ssl
                 for sock in self.clients:
                     try:
                         send_frame(sock, frame)
@@ -136,7 +137,7 @@ class TCPStreamingServer:
                         # Congestion Protection: Client is too slow to absorb frames.
                         # Drop this frame for this client to prevent blocking the whole server.
                         pass
-                    except (BrokenPipeError, ConnectionResetError):
+                    except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError):
                         stale_clients.append(sock)
                 
                 # Cleanup

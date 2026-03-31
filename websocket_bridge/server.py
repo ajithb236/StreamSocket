@@ -27,10 +27,51 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
 client_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
 app.mount("/client", StaticFiles(directory=client_dir), name="client")
-client_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
-app.mount("/client", StaticFiles(directory=client_dir), name="client")
+
+# Optional: Redirect root to /client/index.html for convenience
+from fastapi.responses import RedirectResponse
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/client/index.html")
+
+# Registration endpoint
+from fastapi import Request
+from fastapi.responses import JSONResponse
+@app.post("/register")
+async def register(request: Request):
+    data = await request.json()
+    username = data.get("username", "").strip()
+    password = data.get("password", "")
+    if not username or not password:
+        return JSONResponse({"success": False, "error": "Username and password required."}, status_code=400)
+    if len(username) < 3 or len(password) < 6:
+        return JSONResponse({"success": False, "error": "Username or password too short."}, status_code=400)
+    db = DatabaseAdapter(pool_size=32)
+    # Check if user exists
+    try:
+        conn = db.get_connection()
+        if conn is None:
+            return JSONResponse({"success": False, "error": "Database unavailable."}, status_code=500)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return JSONResponse({"success": False, "error": "Username already exists."}, status_code=409)
+        # Hash password
+        import bcrypt
+        salt = bcrypt.gensalt()
+        hashed = bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+        cursor.execute("INSERT INTO users (username, password_hash) VALUES (%s, %s)", (username, hashed))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"success": True}
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 clients = set()
 
@@ -62,40 +103,59 @@ async def connect_to_tcp_and_broadcast():
 
         # Authenticate with the TCP server securely via .env credentials
         auth_msg = f"AUTH {os.environ.get('STREAM_USER', 'admin')} {os.environ.get('STREAM_PASSWORD', 'admin123')}\n"
-        writer.write(auth_msg.encode('utf-8'))
-        await writer.drain()
+        auth_bytes = auth_msg.encode('utf-8')
+        if auth_bytes:
+            if not writer.is_closing():
+                try:
+                    writer.write(auth_bytes)
+                    await writer.drain()
+                except AssertionError as ae:
+                    print(f"[ERROR] AssertionError during writer.write(auth_bytes): {ae}")
+                    writer.close()
+                    await writer.wait_closed()
+                    return
+            else:
+                print("[ERROR] Writer is already closing before auth write.")
+                return
 
         auth_resp = await reader.read(32)
-        print(f"[DEBUG] Auth response from TCP server: {auth_resp}")
         if b"AUTH_SUCCESS" not in auth_resp:
-            print(f"Bridge failed to auth with TCP server. Server responded with: {auth_resp} using user: {os.environ.get('STREAM_USER')}")
+            print(f"[ERROR] Bridge failed to auth with TCP server. Server responded with: {auth_resp} using user: {os.environ.get('STREAM_USER')}")
             writer.close()
             await writer.wait_closed()
             return
 
-        print("Bridge connected to TCP Backend. Ready to broadcast to WS clients.")
+        print("[INFO] Bridge connected to TCP Backend. Ready to broadcast to WS clients.")
 
         while True:
-            # 1. Read the 4-byte frame header
+            # Read the 4-byte frame header
             header = await reader.readexactly(4)
-            print(f"[DEBUG] Frame header bytes: {header}")
             if not header:
                 break
             (data_size,) = struct.unpack('>I', header)
-            print(f"[DEBUG] Frame size: {data_size}")
 
-            # 2. Read the entire frame payload based on the parsed size
+            # Read the entire frame payload based on the parsed size
             payload = await reader.readexactly(data_size)
             if not payload:
                 break
 
             # Broadcast to web clients
-            if clients:
-                coros = [client.send_bytes(payload) for client in clients]
-                await asyncio.gather(*coros, return_exceptions=True)
+            if payload and clients:
+                if not writer.is_closing():
+                    try:
+                        coros = [client.send_bytes(payload) for client in clients if payload]
+                        await asyncio.gather(*coros, return_exceptions=True)
+                    except AssertionError as ae:
+                        print(f"[ERROR] AssertionError during broadcast: {ae}")
+                        writer.close()
+                        await writer.wait_closed()
+                        break
+                else:
+                    print("[ERROR] Writer is closing during broadcast, breaking loop.")
+                    break
 
     except Exception as e:
-        print(f"Bridge error: {e}")
+        print(f"[ERROR] Bridge error: {e}")
     finally:
         try:
             writer.close()
@@ -111,22 +171,17 @@ async def websocket_endpoint(
     username: str = Query(None), 
     password: str = Query(None)
 ):
-    """
-    WebSocket Handshake (HTTP Upgrade):
-    The client sends an HTTP GET request with 'Connection: Upgrade' and 'Upgrade: websocket'.
-    FastAPI (via Starlette/uvicorn) parses this and responds with HTTP '101 Switching Protocols'.
-    The connection is now a persistent, full-duplex TCP stream (WebSocket).
-    """
-    # 1. Authenticate before accepting using the real Database
-    db = DatabaseAdapter()
+    # WebSocket handshake and upgrade handled by FastAPI/Starlette
+    # Authenticate before accepting using the real Database
+    db = DatabaseAdapter(pool_size=32)
     if not db.authenticate_user(username, password):
-        await websocket.close(code=1008) # Policy Violation
+        await websocket.close(code=1008)  # Policy Violation
         return
 
-    # 2. Accept the WebSocket connection (101 Switching Protocols sent here)
+    # Accept the WebSocket connection
     await websocket.accept()
     
-    # 3. Add to broadcast pool
+    # Add to broadcast pool
     clients.add(websocket)
     try:
         while True:

@@ -32,6 +32,29 @@
         </div>
         <button onclick="login()">Connect</button>
         <div id="login-error" class="error">Invalid credentials or connection failed.</div>
+        <div style="margin-top: 10px; text-align: center;">
+            <a href="#" style="color: #00bfff; text-decoration: underline;" onclick="showRegister()">New user? Register here</a>
+        </div>
+    </div>
+
+    <!-- Registration Modal -->
+    <div id="register-modal" class="container" style="display:none; position: fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.85); z-index:1000; align-items:center; justify-content:center;">
+        <div style="background:#222; padding:40px; border-radius:8px; box-shadow:0 4px 10px rgba(0,0,0,0.5); min-width:320px;">
+            <h2>Register</h2>
+            <div class="input-group">
+                <input type="text" id="reg-username" placeholder="Username">
+            </div>
+            <div class="input-group">
+                <input type="password" id="reg-password" placeholder="Password">
+            </div>
+            <div class="input-group">
+                <input type="password" id="reg-password2" placeholder="Confirm Password">
+            </div>
+            <button onclick="registerUser()">Register</button>
+            <button style="background:#444; margin-top:10px;" onclick="hideRegister()">Cancel</button>
+            <div id="register-error" class="error">Registration failed.</div>
+            <div id="register-success" style="color:#00ff99; margin-top:10px; display:none;">Registration successful! You can now log in.</div>
+        </div>
     </div>
 
     <div id="streaming-view">
@@ -42,6 +65,7 @@
         <canvas id="screen-canvas"></canvas>
     </div>
 
+   
     <script src="app.js"></script>
 </body>
 </html>

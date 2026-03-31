@@ -46,4 +46,4 @@ with open("wss_key.pem", "wb") as f:
         encryption_algorithm=serialization.NoEncryption(),
     ))
 
-print("wss_cert.pem and wss_key.pem generated.")
+print("[INFO] wss_cert.pem and wss_key.pem generated.")

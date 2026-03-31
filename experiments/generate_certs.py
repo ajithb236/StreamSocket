@@ -43,4 +43,4 @@ cert = x509.CertificateBuilder().subject_name(
 with open("cert.pem", "wb") as f:
     f.write(cert.public_bytes(serialization.Encoding.PEM))
 
-print("Successfully generated cert.pem and key.pem")
+    print("[INFO] Successfully generated cert.pem and key.pem")

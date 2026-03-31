@@ -22,7 +22,7 @@ class TCPStreamingServer:
         
         self.clients = []
         self.clients_lock = threading.Lock()
-        self.db = DatabaseAdapter()
+        self.db = DatabaseAdapter(pool_size=32)
         self.screencap = ScreenCapture(fps=30, quality=50)
         self.bytes_sent = 0
         self.frames_sent = 0
@@ -35,7 +35,7 @@ class TCPStreamingServer:
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(100)
-        print(f"[*] TCP Server Listening on {self.host}:{self.port}")
+        print(f"[INFO] TCP Server Listening on {self.host}:{self.port}")
         if self.use_tls:
             context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -43,7 +43,7 @@ class TCPStreamingServer:
             key_path = os.path.join(base_dir, 'key.pem')
             context.load_cert_chain(certfile=cert_path, keyfile=key_path)
             self.server_socket = context.wrap_socket(self.server_socket, server_side=True)
-            print("[*] TLS Encryption Enabled")
+            print("[INFO] TLS Encryption Enabled")
         self.running = True
         threading.Thread(target=self._broadcast_loop, daemon=True).start()
         try:
@@ -63,7 +63,7 @@ class TCPStreamingServer:
             self.server_socket.close()
             
     def _handle_client(self, client_sock, addr):
-        print(f"[+] Client {addr} connected.")
+        print(f"[INFO] Client {addr} connected.")
         
         # Authentication Phase
         username = None
@@ -79,7 +79,7 @@ class TCPStreamingServer:
             if not self.db.authenticate_user(username, password):
                 client_sock.sendall(b"AUTH_FAILED")
                 client_sock.close()
-                print(f"[-] Client {addr} failed authentication.")
+                print(f"[ERROR] Client {addr} failed authentication.")
                 self.db.log_event("DISCONNECT_UNAUTHORIZED", username, addr[0], "Failed login attempt")
                 return
             
@@ -91,7 +91,7 @@ class TCPStreamingServer:
                 client_sock.settimeout(None)  # No timeout for recv
                 self.clients.append(client_sock)
                 
-            print(f"[+] Client {addr} authenticated successfully.")
+            print(f"[INFO] Client {addr} authenticated successfully.")
             self.db.log_event("CONNECT_SUCCESS", username, addr[0], "Client started streaming session")
 
             # Keep connection alive till client disconnects
@@ -104,14 +104,14 @@ class TCPStreamingServer:
                     # Timeout on recv is expected because we set a 0.5s timeout for send congestion.
                     continue
         except Exception as e:
-            print(f"[-] Client {addr} exception: {e}")
+            print(f"[ERROR] Client {addr} exception: {e}")
             self.db.log_event("ERROR", username, addr[0], str(e))
         finally:
             with self.clients_lock:
                 if client_sock in self.clients:
                     self.clients.remove(client_sock)
             client_sock.close()
-            print(f"[-] Client {addr} disconnected.")
+            print(f"[INFO] Client {addr} disconnected.")
             self.db.log_event("DISCONNECT", username, addr[0], "Client ended session")
 
     def _broadcast_loop(self):
@@ -168,6 +168,6 @@ if __name__ == "__main__":
     try:
         server.start()
     except KeyboardInterrupt:
-        print("\n[!] Shutting down server (Ctrl+C)")
+        print("\n[WARN] Shutting down server (Ctrl+C)")
         server.stop()
-        print("[!] Server stopped cleanly.")
+        print("[INFO] Server stopped cleanly.")

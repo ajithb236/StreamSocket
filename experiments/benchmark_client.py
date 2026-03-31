@@ -21,8 +21,8 @@ def recv_exact(sock, size):
     return buf
 
 def run_benchmark(host='127.0.0.1', port=9999, use_tls=True, duration=10):
-    print(f"[*] Starting benchmark against {host}:{port} for {duration} seconds...")
-    print(f"[*] TLS Encrypted: {use_tls}")
+    print(f"[INFO] Starting benchmark against {host}:{port} for {duration} seconds...")
+    print(f"[INFO] TLS Encrypted: {use_tls}")
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     
@@ -41,10 +41,9 @@ def run_benchmark(host='127.0.0.1', port=9999, use_tls=True, duration=10):
         
         auth_resp = sock.recv(1024)
         if b"AUTH_SUCCESS" not in auth_resp:
-            print("[-] Authentication failed.")
+            print("[ERROR] Authentication failed.")
             return
-            
-        print("[+] Connected & Authenticated. Collecting frames...\n")
+        print("[INFO] Connected & Authenticated. Collecting frames...\n")
         
         start_time = time.time()
         frames_received = 0
@@ -74,7 +73,7 @@ def run_benchmark(host='127.0.0.1', port=9999, use_tls=True, duration=10):
     finally:
         sock.close()
         
-    # --- ANALYSIS & MATH ---
+    # Analysis & math
     elapsed = time.time() - start_time
     throughput_mbps = (total_bytes * 8 / 1000000) / elapsed
     fps = frames_received / elapsed
@@ -89,31 +88,20 @@ def run_benchmark(host='127.0.0.1', port=9999, use_tls=True, duration=10):
         avg_latency = jitter = max_latency = 0
 
     print("=" * 50)
-    print("EXPERIMENT RESULTS FORMATTED FOR REPORT")
+    print("EXPERIMENT RESULTS")
     print("=" * 50)
     print(f"Test Duration        : {elapsed:.2f} seconds")
     print(f"Total Frames         : {frames_received}")
     print(f"Total Data Transferred: {total_bytes / (1024*1024):.2f} MB")
-    print("-" * 50)
-    print("THROUGHPUT & FRAMERATE")
-    print("-" * 50)
     print(f"Avg FPS              : {fps:.2f} Frames/sec")
     print(f"Network Throughput   : {throughput_mbps:.2f} Mbps")
-    print("-" * 50)
-    print("LATENCY & JITTER (Frame-to-Frame Arrival)")
-    print("-" * 50)
     print(f"Avg Inter-frame Time : {avg_latency:.2f} ms")
     print(f"Max Spike (Lag)      : {max_latency:.2f} ms")
     print(f"Jitter (Variance)    : {jitter:.2f} ms")
-    print("=" * 50)
-    print("REPORT HINT:")
-    print("- High Jitter means frames are clumped together (bad for real-time video).")
-    print("- Disabling TCP_NODELAY usually increases Jitter significantly because of Nagle's Algorithm.")
-    print("- Enabling TLS usually drops Throughput and slightly increases Avg Inter-frame Time due to encryption overhead.\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=int, default=15, help="Test duration in seconds")
     args = parser.parse_args()
-    # Hardcoded host/port and TLS enabled by default
+  
     run_benchmark(host="127.0.0.1", port=9999, use_tls=True, duration=args.duration)

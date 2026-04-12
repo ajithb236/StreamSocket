@@ -18,12 +18,62 @@ from db.auth import DatabaseAdapter
 env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 load_dotenv(dotenv_path=env_path)
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+
+
+class BridgeClient:
+    def __init__(self, websocket: WebSocket):
+        self.websocket = websocket
+        self.queue = asyncio.Queue(maxsize=1)
+        self.sender_task = None
+
+    def enqueue_latest(self, payload: bytes):
+        if self.sender_task and self.sender_task.done():
+            return
+
+        try:
+            self.queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            with suppress(asyncio.QueueEmpty):
+                self.queue.get_nowait()
+            with suppress(asyncio.QueueFull):
+                self.queue.put_nowait(payload)
+
+    async def sender_loop(self):
+        try:
+            while True:
+                payload = await self.queue.get()
+                if payload is None:
+                    break
+                await self.websocket.send_bytes(payload)
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        except Exception as e:
+            print(f"[WARN] WebSocket sender closed: {e}")
+        finally:
+            clients.discard(self)
+            with suppress(Exception):
+                await self.websocket.close()
+
+    async def close(self):
+        clients.discard(self)
+        if self.sender_task and not self.sender_task.done():
+            self.sender_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await self.sender_task
+        with suppress(Exception):
+            await self.websocket.close()
+
+
+db = DatabaseAdapter(pool_size=32)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    asyncio.create_task(connect_to_tcp_and_broadcast())
+    bridge_task = asyncio.create_task(connect_to_tcp_and_broadcast())
     yield
+    bridge_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await bridge_task
 
 app = FastAPI(lifespan=lifespan)
 
@@ -49,7 +99,6 @@ async def register(request: Request):
         return JSONResponse({"success": False, "error": "Username and password required."}, status_code=400)
     if len(username) < 3 or len(password) < 6:
         return JSONResponse({"success": False, "error": "Username or password too short."}, status_code=400)
-    db = DatabaseAdapter(pool_size=32)
     # Check if user exists
     try:
         conn = db.get_connection()
@@ -78,6 +127,8 @@ clients = set()
 TCP_HOST = '127.0.0.1'
 TCP_PORT = 9999
 USE_TLS = True
+WEB_HOST = "0.0.0.0"
+WEB_PORT = 8000
 
 def recv_exact(sock, size):
     buf = b""
@@ -89,79 +140,60 @@ def recv_exact(sock, size):
     return buf
 
 async def connect_to_tcp_and_broadcast():
-    # Connects to the TCP server using asyncio streams with SSL, receives frames, and broadcasts to WebSocket clients.
-    ssl_ctx = None
-    if USE_TLS:
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
+    # Connect to the TCP server, keep reading frames, and fan them out without waiting on each browser socket.
+    while True:
+        ssl_ctx = None
+        writer = None
+        if USE_TLS:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
 
-    try:
-        reader, writer = await asyncio.open_connection(
-            TCP_HOST, TCP_PORT, ssl=ssl_ctx
-        )
+        try:
+            reader, writer = await asyncio.open_connection(
+                TCP_HOST, TCP_PORT, ssl=ssl_ctx
+            )
 
-        # Authenticate with the TCP server securely via .env credentials
-        auth_msg = f"AUTH {os.environ.get('STREAM_USER', 'admin')} {os.environ.get('STREAM_PASSWORD', 'admin123')}\n"
-        auth_bytes = auth_msg.encode('utf-8')
-        if auth_bytes:
-            if not writer.is_closing():
-                try:
-                    writer.write(auth_bytes)
-                    await writer.drain()
-                except AssertionError as ae:
-                    print(f"[ERROR] AssertionError during writer.write(auth_bytes): {ae}")
-                    writer.close()
-                    await writer.wait_closed()
-                    return
-            else:
-                print("[ERROR] Writer is already closing before auth write.")
-                return
+            auth_msg = f"AUTH {os.environ.get('STREAM_USER', 'admin')} {os.environ.get('STREAM_PASSWORD', 'admin123')}\n"
+            auth_bytes = auth_msg.encode('utf-8')
+            if auth_bytes:
+                if writer.is_closing():
+                    raise ConnectionError("Writer closed before auth write.")
+                writer.write(auth_bytes)
+                await writer.drain()
 
-        auth_resp = await reader.read(32)
-        if b"AUTH_SUCCESS" not in auth_resp:
-            print(f"[ERROR] Bridge failed to auth with TCP server. Server responded with: {auth_resp} using user: {os.environ.get('STREAM_USER')}")
-            writer.close()
-            await writer.wait_closed()
-            return
+            auth_resp = await reader.read(32)
+            if b"AUTH_SUCCESS" not in auth_resp:
+                raise ConnectionError(
+                    f"Bridge failed to auth with TCP server. Server responded with: {auth_resp} using user: {os.environ.get('STREAM_USER')}"
+                )
 
-        print("[INFO] Bridge connected to TCP Backend. Ready to broadcast to WS clients.")
+            print("[INFO] Bridge connected to TCP Backend. Ready to broadcast to WS clients.")
 
-        while True:
-            # Read the 4-byte frame header
-            header = await reader.readexactly(4)
-            if not header:
-                break
-            (data_size,) = struct.unpack('>I', header)
-
-            # Read the entire frame payload based on the parsed size
-            payload = await reader.readexactly(data_size)
-            if not payload:
-                break
-
-            # Broadcast to web clients
-            if payload and clients:
-                if not writer.is_closing():
-                    try:
-                        coros = [client.send_bytes(payload) for client in clients if payload]
-                        await asyncio.gather(*coros, return_exceptions=True)
-                    except AssertionError as ae:
-                        print(f"[ERROR] AssertionError during broadcast: {ae}")
-                        writer.close()
-                        await writer.wait_closed()
-                        break
-                else:
-                    print("[ERROR] Writer is closing during broadcast, breaking loop.")
+            while True:
+                header = await reader.readexactly(4)
+                if not header:
+                    break
+                (data_size,) = struct.unpack('>I', header)
+                payload = await reader.readexactly(data_size)
+                if not payload:
                     break
 
-    except Exception as e:
-        print(f"[ERROR] Bridge error: {e}")
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except:
-            pass
+                if payload and clients:
+                    for client in tuple(clients):
+                        client.enqueue_latest(payload)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[ERROR] Bridge error: {e}")
+        finally:
+            if writer is not None:
+                with suppress(Exception):
+                    writer.close()
+                    await writer.wait_closed()
+
+        await asyncio.sleep(2)
 
 
 
@@ -173,7 +205,6 @@ async def websocket_endpoint(
 ):
     # WebSocket handshake and upgrade handled by FastAPI/Starlette
     # Authenticate before accepting using the real Database
-    db = DatabaseAdapter(pool_size=32)
     if not db.authenticate_user(username, password):
         await websocket.close(code=1008)  # Policy Violation
         return
@@ -182,21 +213,30 @@ async def websocket_endpoint(
     await websocket.accept()
     
     # Add to broadcast pool
-    clients.add(websocket)
+    client = BridgeClient(websocket)
+    clients.add(client)
+    client.sender_task = asyncio.create_task(client.sender_loop())
     try:
         while True:
-            # Wait for any client message (ping, disconnect)
-            _ = await websocket.receive_text()
-    except WebSocketDisconnect:
-        clients.remove(websocket)
+            # Wait for any client message and exit as soon as Starlette reports disconnect.
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        await client.close()
         
 if __name__ == "__main__":
     cert_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wss_cert.pem")
     key_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wss_key.pem")
+    browser_proto = "https"
+    print(f"[INFO] Browser UI available at {browser_proto}://localhost:{WEB_PORT}/client/index.html")
+    print("[INFO] If the cert is self-signed, accept the browser warning once before streaming.")
     uvicorn.run(
         "server:app",
-        host="0.0.0.0",
-        port=8000,
+        host=WEB_HOST,
+        port=WEB_PORT,
         reload=True,
         ssl_certfile=cert_path,
         ssl_keyfile=key_path

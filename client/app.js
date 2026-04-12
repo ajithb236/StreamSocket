@@ -1,6 +1,8 @@
 let ws;
 let frameCount = 0;
 let lastTime = performance.now();
+let pendingFrame = null;
+let renderScheduled = false;
 
 const canvas = document.getElementById('screen-canvas');
 const ctx = canvas.getContext('2d');
@@ -75,16 +77,11 @@ function login() {
     };
 
     ws.onmessage = (event) => {
-        const blob = event.data;
-        const img = new Image();
-        img.onload = () => {
-            canvas.width = img.width;
-            canvas.height = img.height;
-            ctx.drawImage(img, 0, 0);
-            URL.revokeObjectURL(img.src);
-            frameCount++;
-        };
-        img.src = URL.createObjectURL(blob);
+        pendingFrame = event.data;
+        if (!renderScheduled) {
+            renderScheduled = true;
+            requestAnimationFrame(processLatestFrame);
+        }
     };
 
     ws.onerror = (err) => {
@@ -92,11 +89,62 @@ function login() {
     };
 
     ws.onclose = () => {
+        pendingFrame = null;
+        renderScheduled = false;
         document.getElementById('streaming-view').style.display = 'none';
         document.getElementById('login-view').style.display = 'flex';
         document.getElementById('status').innerText = "Disconnected";
         document.getElementById('status').style.color = "red";
     };
+}
+
+async function processLatestFrame() {
+    renderScheduled = false;
+
+    const blob = pendingFrame;
+    pendingFrame = null;
+    if (!blob) {
+        return;
+    }
+
+    if ("createImageBitmap" in window) {
+        const bitmap = await createImageBitmap(blob);
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+        }
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        frameCount++;
+    } else {
+        await drawFrameWithImage(blob);
+    }
+
+    if (pendingFrame) {
+        renderScheduled = true;
+        requestAnimationFrame(processLatestFrame);
+    }
+}
+
+function drawFrameWithImage(blob) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            if (canvas.width !== img.width || canvas.height !== img.height) {
+                canvas.width = img.width;
+                canvas.height = img.height;
+            }
+            ctx.drawImage(img, 0, 0);
+            URL.revokeObjectURL(img.src);
+            frameCount++;
+            resolve();
+        };
+        img.onerror = () => {
+            URL.revokeObjectURL(img.src);
+            resolve();
+        };
+        img.src = URL.createObjectURL(blob);
+    });
 }
 
 function updateFPS() {

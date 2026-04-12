@@ -3,9 +3,16 @@ import socket
 
 
 
+def build_frame_packet(data: bytes) -> bytes:
+    return struct.pack('>I', len(data)) + data
+
+
+def send_packet(sock, packet: bytes):
+    sock.sendall(packet)
+
+
 def send_frame(sock, data: bytes):
-    header = struct.pack('>I', len(data))
-    sock.sendall(header + data)
+    sock.sendall(build_frame_packet(data))
 
 def recv_exact(sock, size: int) -> bytes:
     buffer = b""
